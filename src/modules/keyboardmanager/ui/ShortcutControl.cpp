@@ -79,6 +79,13 @@ void ShortcutControl::createDetectShortcutWindow(IInspectable const& sender, Xam
     // Get the linked text block for the "Type shortcut" button that was clicked
     TextBlock linkedShortcutText = getSiblingElement(sender).as<TextBlock>();
 
+    auto unregisterKeys = [&keyboardManagerState]() {
+        std::thread t1(&KeyboardManagerState::UnregisterKeyDelay, &keyboardManagerState, VK_ESCAPE);
+        std::thread t2(&KeyboardManagerState::UnregisterKeyDelay, &keyboardManagerState, VK_RETURN);
+        t1.detach();
+        t2.detach();
+    };
+
     // OK button
     detectShortcutBox.PrimaryButtonClick([=, &shortcutRemapBuffer, &keyboardManagerState](Windows::UI::Xaml::Controls::ContentDialog const& sender, ContentDialogButtonClickEventArgs const&) {
         // Save the detected shortcut in the linked text block
@@ -92,13 +99,57 @@ void ShortcutControl::createDetectShortcutWindow(IInspectable const& sender, Xam
 
         // Reset the keyboard manager UI state
         keyboardManagerState.ResetUIState();
+        unregisterKeys();
     });
 
+    keyboardManagerState.RegisterKeyDelay(
+        VK_RETURN,
+        std::bind(&KeyboardManagerState::SelectDetectedShortcut, &keyboardManagerState, std::placeholders::_1),
+        [=, &shortcutRemapBuffer, &keyboardManagerState](DWORD) {
+            // Save the detected shortcut in the linked text block
+            Shortcut detectedShortcutKeys = keyboardManagerState.GetDetectedShortcut();
+
+            detectShortcutBox.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [detectShortcutBox, linkedShortcutText, &detectedShortcutKeys, &keyboardManagerState] {
+                    detectShortcutBox.Hide();
+
+                    if (!detectedShortcutKeys.IsEmpty())
+                    {
+                        linkedShortcutText.Text(detectedShortcutKeys.ToHstring(keyboardManagerState.keyboardMap));
+                    }
+                });
+
+            if (!detectedShortcutKeys.IsEmpty())
+            {
+                shortcutRemapBuffer[rowIndex][colIndex] = detectedShortcutKeys;
+            }
+
+            // Reset the keyboard manager UI state
+            keyboardManagerState.ResetUIState();
+            unregisterKeys();
+        });
+
     // Cancel button
-    detectShortcutBox.CloseButtonClick([&keyboardManagerState](Windows::UI::Xaml::Controls::ContentDialog const& sender, ContentDialogButtonClickEventArgs const&) {
+    detectShortcutBox.CloseButtonClick([unregisterKeys, &keyboardManagerState](Windows::UI::Xaml::Controls::ContentDialog const& sender, ContentDialogButtonClickEventArgs const&) {
         // Reset the keyboard manager UI state
         keyboardManagerState.ResetUIState();
+        unregisterKeys();
     });
+
+    keyboardManagerState.RegisterKeyDelay(
+        VK_ESCAPE,
+        std::bind(&KeyboardManagerState::SelectDetectedShortcut, &keyboardManagerState, std::placeholders::_1),
+        [&keyboardManagerState, detectShortcutBox, unregisterKeys](DWORD) {
+            detectShortcutBox.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [detectShortcutBox] {
+                    detectShortcutBox.Hide();
+                });
+
+            keyboardManagerState.ResetUIState();
+            unregisterKeys();
+        });
 
     // StackPanel parent for the displayed text in the dialog
     Windows::UI::Xaml::Controls::StackPanel stackPanel;
@@ -112,8 +163,21 @@ void ShortcutControl::createDetectShortcutWindow(IInspectable const& sender, Xam
 
     // Target StackPanel to place the selected key
     Windows::UI::Xaml::Controls::StackPanel keyStackPanel;
-    stackPanel.Children().Append(keyStackPanel);
     keyStackPanel.Orientation(Orientation::Horizontal);
+    stackPanel.Children().Append(keyStackPanel);
+
+    TextBlock holdEscInfo;
+    holdEscInfo.Text(winrt::to_hstring("Hold Esc to discard"));
+    holdEscInfo.FontSize(12);
+    holdEscInfo.Margin({ 0, 20, 0, 0 });
+    stackPanel.Children().Append(holdEscInfo);
+
+    TextBlock holdEnterInfo;
+    holdEnterInfo.Text(winrt::to_hstring("Hold Enter to apply"));
+    holdEnterInfo.FontSize(12);
+    holdEnterInfo.Margin({ 0, 0, 0, 0 });
+    stackPanel.Children().Append(holdEnterInfo);
+
 
     stackPanel.UpdateLayout();
 

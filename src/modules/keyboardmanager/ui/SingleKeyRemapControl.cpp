@@ -81,6 +81,13 @@ void SingleKeyRemapControl::createDetectKeyWindow(IInspectable const& sender, Xa
     // Get the linked text block for the "Type Key" button that was clicked
     TextBlock linkedRemapText = getSiblingElement(sender).as<TextBlock>();
 
+     auto unregisterKeys = [&keyboardManagerState]() {
+        std::thread t1(&KeyboardManagerState::UnregisterKeyDelay, &keyboardManagerState, VK_ESCAPE);
+        std::thread t2(&KeyboardManagerState::UnregisterKeyDelay, &keyboardManagerState, VK_RETURN);
+        t1.detach();
+        t2.detach();
+    };
+
     // OK button
     detectRemapKeyBox.PrimaryButtonClick([=, &singleKeyRemapBuffer, &keyboardManagerState](Windows::UI::Xaml::Controls::ContentDialog const& sender, ContentDialogButtonClickEventArgs const&) {
         // Save the detected key in the linked text block
@@ -94,14 +101,60 @@ void SingleKeyRemapControl::createDetectKeyWindow(IInspectable const& sender, Xa
 
         // Reset the keyboard manager UI state
         keyboardManagerState.ResetUIState();
+        unregisterKeys();
     });
+
+    keyboardManagerState.RegisterKeyDelay(
+        VK_RETURN,
+        std::bind(&KeyboardManagerState::SelectDetectedRemapKey, &keyboardManagerState, std::placeholders::_1),
+        [=, &singleKeyRemapBuffer, &keyboardManagerState](DWORD) {
+            DWORD detectedKey = keyboardManagerState.GetDetectedSingleRemapKey();
+
+            detectRemapKeyBox.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [detectRemapKeyBox, linkedRemapText, detectedKey, &keyboardManagerState] {
+                    detectRemapKeyBox.Hide();
+
+                    if (detectedKey != NULL)
+                    {
+                        linkedRemapText.Text(winrt::to_hstring(keyboardManagerState.keyboardMap.GetKeyName(detectedKey).c_str()));
+                    }
+                }
+            );
+
+            if (detectedKey != NULL)
+            {
+                singleKeyRemapBuffer[rowIndex][colIndex] = detectedKey;
+            }
+
+            // Reset the keyboard manager UI state
+            keyboardManagerState.ResetUIState();
+            unregisterKeys();
+        }
+    );
 
     // Cancel button
-    detectRemapKeyBox.CloseButtonClick([&keyboardManagerState](Windows::UI::Xaml::Controls::ContentDialog const& sender, ContentDialogButtonClickEventArgs const&) {
+    detectRemapKeyBox.CloseButtonClick([unregisterKeys, &keyboardManagerState](Windows::UI::Xaml::Controls::ContentDialog const& sender, ContentDialogButtonClickEventArgs const&) {
         // Reset the keyboard manager UI state
         keyboardManagerState.ResetUIState();
+        unregisterKeys();
     });
 
+    keyboardManagerState.RegisterKeyDelay(
+        VK_ESCAPE,
+        std::bind(&KeyboardManagerState::SelectDetectedRemapKey, &keyboardManagerState, std::placeholders::_1),
+        [&keyboardManagerState, detectRemapKeyBox, unregisterKeys](DWORD) {
+            detectRemapKeyBox.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [detectRemapKeyBox] {
+                    detectRemapKeyBox.Hide();
+                });
+
+            keyboardManagerState.ResetUIState();
+            unregisterKeys();
+        }
+    );
+    
     // StackPanel parent for the displayed text in the dialog
     Windows::UI::Xaml::Controls::StackPanel stackPanel;
     detectRemapKeyBox.Content(stackPanel);
@@ -114,8 +167,22 @@ void SingleKeyRemapControl::createDetectKeyWindow(IInspectable const& sender, Xa
 
     // Target StackPanel to place the selected key
     Windows::UI::Xaml::Controls::StackPanel keyStackPanel;
-    stackPanel.Children().Append(keyStackPanel);
     keyStackPanel.Orientation(Orientation::Horizontal);
+    stackPanel.Children().Append(keyStackPanel);
+
+    TextBlock holdEscInfo;
+    holdEscInfo.Text(winrt::to_hstring("Hold Esc to discard"));
+    holdEscInfo.FontSize(12);
+    holdEscInfo.Margin({ 0, 20, 0, 0 });
+    stackPanel.Children().Append(holdEscInfo);
+
+    TextBlock holdEnterInfo;
+    holdEnterInfo.Text(winrt::to_hstring("Hold Enter to apply"));
+    holdEnterInfo.FontSize(12);
+    holdEnterInfo.Margin({ 0, 0, 0, 0 });
+    stackPanel.Children().Append(holdEnterInfo);
+
+
     stackPanel.UpdateLayout();
 
     // Configure the keyboardManagerState to store the UI information.
